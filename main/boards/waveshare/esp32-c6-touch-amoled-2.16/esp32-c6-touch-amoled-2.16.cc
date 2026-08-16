@@ -1,4 +1,5 @@
 #include "display/lcd_display.h"
+#include "display/codex_pet_overlay.h"
 #include "esp_lcd_sh8601.h"
 #include "wifi_board.h"
 
@@ -128,6 +129,20 @@ public:
         lv_obj_set_style_pad_right(top_bar_, 60, 0);
         lv_display_add_event_cb(display_, rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
     }
+
+    // Route the app's emotion signal to the Codex pet overlay so it animates
+    // in sync with the assistant state, then keep the base behaviour too.
+    void SetPetOverlay(CodexPetOverlay* pet) { pet_overlay_ = pet; }
+
+    virtual void SetEmotion(const char* emotion) override {
+        if (pet_overlay_) {
+            pet_overlay_->SetEmotion(emotion);
+        }
+        SpiLcdDisplay::SetEmotion(emotion);
+    }
+
+private:
+    CodexPetOverlay* pet_overlay_ = nullptr;
 };
 
 class CustomBacklight : public Backlight {
@@ -154,9 +169,11 @@ private:
     i2c_master_bus_handle_t i2c_bus_;
     Pmic* pmic_ = nullptr;
     Button boot_button_;
+    Button key3_button_;  // GPIO10: white-box pet animation cycler
     CustomLcdDisplay* display_;
     CustomBacklight* backlight_;
     PowerSaveTimer* power_save_timer_;
+    CodexPetOverlay* pet_overlay_ = nullptr;  // Codex Pet Overlay
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 120, 1200);
@@ -212,6 +229,14 @@ private:
             }
             app.ToggleChatState();
         });
+
+        // KEY3 (GPIO10): white-box test - cycle pet animations, each played 3x,
+        // with the animation name shown at the bottom of the screen.
+        key3_button_.OnClick([this]() {
+            if (pet_overlay_) {
+                pet_overlay_->CyclePlayForTest();
+            }
+        });
     }
 
     int DisplayPort_DispReset() {
@@ -265,6 +290,40 @@ private:
         backlight_->RestoreBrightness();
     }
 
+    void InitializeCodexPet() {
+        ESP_LOGI(TAG, "=== InitializeCodexPet() called ===");
+
+        // Get the active screen - same method as lcd_display.cc uses
+        lv_obj_t* screen = lv_screen_active();
+        ESP_LOGI(TAG, "LVGL screen from lv_screen_active(): %p", screen);
+
+        if (screen) {
+            ESP_LOGI(TAG, "Creating CodexPetOverlay...");
+            pet_overlay_ = new CodexPetOverlay(screen);
+
+            ESP_LOGI(TAG, "Loading pet...");
+            if (pet_overlay_->LoadPetFromAssets()) {
+                // Route app emotion signals to the pet so it animates with state.
+                if (display_) {
+                    display_->SetPetOverlay(pet_overlay_);
+                }
+                ESP_LOGI(TAG, "Setting emotion to idle...");
+                pet_overlay_->SetEmotion("idle");
+
+                ESP_LOGI(TAG, "Showing pet overlay...");
+                pet_overlay_->Show();
+
+                ESP_LOGI(TAG, "✅ Codex Pet overlay initialized successfully");
+            } else {
+                ESP_LOGW(TAG, "⚠️ Codex Pet failed to load");
+            }
+        } else {
+            ESP_LOGW(TAG, "⚠️ LVGL screen is NULL");
+        }
+
+        ESP_LOGI(TAG, "=== InitializeCodexPet() completed ===");
+    }
+
     void InitializeTouch() {
         esp_lcd_touch_handle_t tp;
         esp_lcd_touch_config_t tp_cfg = {
@@ -311,12 +370,37 @@ private:
     }
 
 public:
-    WaveshareEsp32c6TouchAMOLED2inch16() : boot_button_(BOOT_BUTTON_GPIO) {
+    static void InitCodexPetCallback(lv_timer_t* timer) {
+        auto* board = static_cast<WaveshareEsp32c6TouchAMOLED2inch16*>(lv_timer_get_user_data(timer));
+        board->InitializeCodexPet();
+
+        // Delete the one-shot init timer
+        lv_timer_delete(timer);
+
+        // Schedule another delayed show to ensure it's on top after all UI is ready
+        lv_timer_t* delayed_show = lv_timer_create([](lv_timer_t* t) {
+            auto* board = static_cast<WaveshareEsp32c6TouchAMOLED2inch16*>(lv_timer_get_user_data(t));
+            if (board->GetCodexPetOverlay()) {
+                ESP_LOGI("Board", "Re-showing pet overlay after UI setup");
+                board->GetCodexPetOverlay()->Show();
+            }
+            lv_timer_delete(t);
+        }, 3000, board);  // 3 seconds after init
+        lv_timer_set_repeat_count(delayed_show, 1);
+    }
+
+    WaveshareEsp32c6TouchAMOLED2inch16() : boot_button_(BOOT_BUTTON_GPIO), key3_button_(GPIO_NUM_10) {
         InitializePowerSaveTimer();
         InitializeCodecI2c();
         InitializeAxp2101();
         InitializeSpi();
         InitializeSH8601Display();
+
+        // Delay CodexPet initialization to ensure LVGL is fully ready
+        // Use a one-shot timer to initialize after LVGL task starts
+        lv_timer_t* init_timer = lv_timer_create(InitCodexPetCallback, 500, this);
+        lv_timer_set_repeat_count(init_timer, 1);
+
         InitializeTouch();
         InitializeButtons();
         InitializeTools();
@@ -334,6 +418,8 @@ public:
     virtual Display* GetDisplay() override { return display_; }
 
     virtual Backlight* GetBacklight() override { return backlight_; }
+
+    CodexPetOverlay* GetCodexPetOverlay() { return pet_overlay_; }
 
     virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
         static bool last_discharging = false;

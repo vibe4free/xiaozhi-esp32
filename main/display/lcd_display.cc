@@ -855,6 +855,9 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_border_width(emoji_box_, 0, 0);
     lv_obj_align(emoji_box_, LV_ALIGN_CENTER, 0, 0);
 
+    // The Codex pet overlay replaces the emoji face, so hide the emoji box.
+    lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+
     emoji_label_ = lv_label_create(emoji_box_);
     lv_obj_set_style_text_font(emoji_label_, large_icon_font, 0);
     lv_obj_set_style_text_color(emoji_label_, lvgl_theme->text_color(), 0);
