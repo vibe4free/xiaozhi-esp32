@@ -1,3 +1,12 @@
+> **项目目标** —— 本项目是上游 [小智 ESP32](https://github.com/78/xiaozhi-esp32) 语音助手固件的 fork。其核心目标是在原小智项目的基础上扩展 **Codex Pets** 支持——在设备显示屏上呈现有表现力的虚拟宠物（Codex Pets）动画，让助手在既有的语音交互与 MCP 能力之上，拥有一个生动的虚拟宠物形象。
+>
+> 在保留上游全部功能（WebSocket/MQTT 传输、Opus 音频流、离线唤醒词、显示屏、摄像头、设备端与云端 MCP 等）的基础上，本 fork 聚焦于：
+> - 在支持的 OLED / LCD 屏幕上渲染 Codex 宠物动画；
+> - 由助手的运行时状态与对话事件驱动宠物的表情与行为；
+> - 与上游构建系统（`scripts/build.py`、`main/CMakeLists.txt`、`main/Kconfig.projbuild`）及所有现有板型保持完全兼容，使任意上游板型都能叠加 Codex Pets 能力。
+>
+> 本 fork 会定期将上游变更合并回来（参见合并提交），而 Codex Pets 相关改动以叠加层的方式存在，不修改上游核心模块。
+
 # An MCP-based Chatbot
 
 （中文 | [English](README.md) | [日本語](README_ja.md)）

@@ -1,3 +1,12 @@
+> **Project Goal** — This is a fork of the upstream [XiaoZhi ESP32](https://github.com/78/xiaozhi-esp32) voice-assistant firmware. Its core goal is to extend the original XiaoZhi project with **Codex Pets** support — bringing animated, expressive companion characters (Codex pets) to the device's display so the assistant gains a lively virtual pet presence on top of the existing voice-interaction and MCP capabilities.
+>
+> On top of the upstream feature set (WebSocket/MQTT transports, Opus streaming, offline wake words, displays, cameras, device-side and cloud-side MCP, etc.), this fork focuses on:
+> - Rendering Codex pet animations on supported OLED / LCD screens.
+> - Driving pet expressions and behaviors from the assistant's runtime state and conversation events.
+> - Keeping full compatibility with the upstream build system (`scripts/build.py`, `main/CMakeLists.txt`, `main/Kconfig.projbuild`) and all existing boards, so any upstream board can gain the Codex Pets overlay.
+>
+> Upstream changes are periodically merged back into this fork (see the merge commits), while the Codex Pets work remains layered on top rather than modifying core upstream modules.
+
 # An MCP-based Chatbot
 
 (English | [中文](README_zh.md) | [日本語](README_ja.md))
