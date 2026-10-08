@@ -3,6 +3,7 @@
 #include "assets/lang_config.h"
 #include "audio_codec.h"
 #include "board.h"
+#include "cjson_utils.h"
 #include "display.h"
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
@@ -71,6 +72,8 @@ void Application::Initialize() {
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
     audio_service_.Start();
+    ESP_LOGI(TAG, "After board/audio init");
+    SystemInfo::PrintHeapStats();
 
     AudioServiceCallbacks callbacks;
     callbacks.on_send_queue_available = [this]() {
@@ -335,20 +338,28 @@ void Application::HandleActivationDoneEvent() {
 
     has_server_time_ = ota_->HasServerTime();
 
-    auto display = Board::GetInstance().GetDisplay();
-    std::string message = std::string(Lang::Strings::VERSION) + ota_->GetCurrentVersion();
-    display->ShowNotification(message.c_str());
-    display->SetChatMessage("system", "");
+    // Protocol start may have already raised MAIN_EVENT_ERROR. Do not replace
+    // that alert with the "ready" UI/sound — the main loop can process both
+    // events back-to-back because the activation task is lower priority.
+    const bool has_error = !last_error_message_.empty();
+    if (!has_error) {
+        auto display = Board::GetInstance().GetDisplay();
+        std::string message = std::string(Lang::Strings::VERSION) + ota_->GetCurrentVersion();
+        display->ShowNotification(message.c_str());
+        display->SetChatMessage("system", "");
+    }
 
     // Release OTA object after activation is complete
     ota_.reset();
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 
-    Schedule([this]() {
-        // Play the success sound to indicate the device is ready
-        audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
-    });
+    if (!has_error) {
+        Schedule([this]() {
+            // Play the success sound to indicate the device is ready
+            audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+        });
+    }
 }
 
 void Application::ActivationTask() {
@@ -438,21 +449,21 @@ void Application::CheckNewVersion() {
         auto display = board.GetDisplay();
         display->SetStatus(Lang::Strings::CHECKING_NEW_VERSION);
 
-        esp_err_t err = ota_->CheckVersion();
-        if (err != ESP_OK) {
+        auto check = ota_->CheckVersion();
+        if (!check) {
             retry_count++;
             if (retry_count >= MAX_RETRY) {
                 ESP_LOGE(TAG, "Too many retries, exit version check");
                 return;
             }
 
-            char error_message[128];
+            const auto& err = check.error();
+            char error_message[160];
             int error_message_length =
-                snprintf(error_message, sizeof(error_message), "code=%d, url=%s", err,
-                         ota_->GetCheckVersionUrl().c_str());
+                snprintf(error_message, sizeof(error_message), "%s", err.ToString().c_str());
             if (error_message_length < 0 ||
                 error_message_length >= static_cast<int>(sizeof(error_message))) {
-                snprintf(error_message, sizeof(error_message), "code=%d", err);
+                snprintf(error_message, sizeof(error_message), "%s", err.Message());
             }
 
             char buffer[320];
@@ -461,7 +472,7 @@ void Application::CheckNewVersion() {
                          retry_delay, error_message);
             if (alert_message_length < 0 ||
                 alert_message_length >= static_cast<int>(sizeof(buffer))) {
-                snprintf(buffer, sizeof(buffer), "code=%d", err);
+                snprintf(buffer, sizeof(buffer), "%s", err.Message());
             }
             Alert(Lang::Strings::ERROR, buffer, "cloud_off", Lang::Sounds::OGG_EXCLAMATION);
 
@@ -692,12 +703,16 @@ void Application::InitializeProtocol() {
 #if CONFIG_RECEIVE_CUSTOM_MESSAGE
         } else if (strcmp(type->valuestring, "custom") == 0) {
             auto payload = cJSON_GetObjectItem(root, "payload");
-            ESP_LOGI(TAG, "Received custom message: %s", cJSON_PrintUnformatted(root));
+            CJsonStringUniquePtr root_json(cJSON_PrintUnformatted(root));
+            ESP_LOGI(TAG, "Received custom message: %s", root_json ? root_json.get() : "");
             if (cJSON_IsObject(payload)) {
-                Schedule(
-                    [this, display, payload_str = std::string(cJSON_PrintUnformatted(payload))]() {
-                        display->SetChatMessage("system", payload_str.c_str());
-                    });
+                CJsonStringUniquePtr payload_json(cJSON_PrintUnformatted(payload));
+                if (payload_json) {
+                    Schedule(
+                        [this, display, payload_str = std::string(payload_json.get())]() {
+                            display->SetChatMessage("system", payload_str.c_str());
+                        });
+                }
             } else {
                 ESP_LOGW(TAG, "Invalid custom message format: missing payload");
             }
@@ -747,6 +762,7 @@ void Application::Alert(const char* status, const char* message, const char* emo
 }
 
 void Application::DismissAlert() {
+    last_error_message_.clear();
     if (GetDeviceState() == kDeviceStateIdle) {
         auto display = Board::GetInstance().GetDisplay();
         display->SetStatus(Lang::Strings::STANDBY);
@@ -991,9 +1007,15 @@ void Application::HandleStateChangedEvent() {
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
-            display->SetStatus(Lang::Strings::STANDBY);
-            display->ClearChatMessages();    // Clear messages first
-            display->SetEmotion("neutral");  // Then set emotion (wechat mode checks child count)
+            // Keep a just-raised network error visible. SetDeviceState(idle)
+            // queues STATE_CHANGED after Alert(), and the idle handler would
+            // otherwise wipe the status, emotion, and chat message.
+            if (last_error_message_.empty()) {
+                display->SetStatus(Lang::Strings::STANDBY);
+                display->ClearChatMessages();  // Clear messages first
+                display->SetEmotion(
+                    "neutral");  // Then set emotion (wechat mode checks child count)
+            }
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
             break;
